@@ -1,0 +1,72 @@
+#! /bin/bash
+
+# Flags
+while test $# -gt 0; do
+	case "$1" in
+		-d)
+			shift
+			wp db drop --yes
+			;;
+		-c)
+			shift
+			wp db create
+			wp core install
+			wp post delete 1
+			wp theme activate patched-up-hooks 
+			wp option update permalink_structure '/%postname%/'
+			wp option update category_base '/plugins'
+			wp option update gmt_offset '-4'
+			wp option update start_of_week '0'
+			;;
+		*)
+			break
+			;;
+	esac
+done
+
+# Validation
+if [[ ! -d $1 && ! -f $1 ]]; then
+    echo "$1 is not a file or directory"
+    exit 1
+fi
+
+PLUGIN=$1
+PLUGIN_NAME=$(grep -h -m 1 'Plugin Name:' $PLUGIN*.php | awk -F: '{ print $2 }' )
+
+CATEGORY=$(wp term create category "$PLUGIN_NAME" --porcelain)
+
+# grep:  Recursively search for all do_actions and apply_filters in the given folder
+# awk:   Separate by quotes and return the middle section, the hook name
+# sort:  Sort the hook names alphabetically, removing duplicates
+# while: Send each hook name to be processed
+#grep -rh 'do_action(\|apply_filters(' $PLUGIN | awk  '/do_action\([ ]*'\''|apply_filters\([ ]*'\''/{flag=1}/'\''/{flag=0}flag' | sort -u | while read hook; do
+
+grep -rn 'apply_filters(' $PLUGIN | while read line; do #find every line with a filter
+
+	# get the hook in this line
+	HOOK=`echo $line | grep -oP "(?<=apply_filters\().*?$" | awk -F\' '{ print $2 }'`
+
+	FILE=`echo $line | awk -F: '{ print $1 }'`
+	NUMB=`echo $line | awk -F: '{ print $2 }'`
+	CODE=`echo $line | awk -F: '{$1=$2="";print}'` 
+
+	IFS='/' read -r PLUGINDIR FILENAME <<< "$FILE"
+
+	let "LINENUM = $NUMB - 5"
+
+	TAG=`grep -l -m 1 'Plugin Name:' $PLUGIN*.php | xargs grep 'Version:' | awk -F': ' '{ print $2 }' | tr -d '[[:space:]]'`
+	SVN="http://plugins.svn.wordpress.org/${PLUGIN}tags/${TAG}/${FILENAME}"
+
+	#echo $line; echo $HOOK; echo $FILE; echo $NUMB; echo $CODE; echo -e "\n"
+
+	# grep: Recursively grab the 11 lines containing the hook name
+	# sed:  Convert html elements into encoded chars and convert tabs to 4 spaces
+
+	CONTENT="<h2>$HOOK</h2>"
+	CONTENT+="<h4>Line <code>$NUMB</code> in <code><a href='$SVN' target='_blank'>/$FILE <span class='glyphicon glyphicon-new-window'></span></a></code></h4>"
+	CONTENT+="<pre class='prettyprint linenums:$LINENUM'>"
+	CONTENT+=`awk -vline="$NUMB" 'NR >= line-5 && NR <= line+5' $FILE | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g;s/\t/    /g'`
+	CONTENT+="</pre>"
+
+	wp post create --post_status=publish --post_title=$HOOK --post_content="$CONTENT" --post_category=$CATEGORY 
+done
